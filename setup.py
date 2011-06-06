@@ -358,7 +358,7 @@ class psycopg_build_ext(build_ext):
     def finalize_linux2(self):
         """Finalize build system configuration on GNU/Linux platform."""
         # tell piro that GCC is fine and dandy, but not so MS compilers
-        for extension in ext:
+        for extension in self.extensions:
             extension.extra_compile_args.append(
                 '-Wdeclaration-after-statement')
 
