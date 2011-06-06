@@ -414,12 +414,7 @@ class psycopg_build_ext(build_ext):
 define_macros = []
 include_dirs = []
 
-# gather information to build the extension module
-ext = []
-data_files = []
-
 # sources
-
 sources = [
     'psycopgmodule.c',
     'green.c', 'pqpath.c', 'utils.c', 'bytes_format.c',
@@ -524,11 +519,11 @@ else:
 sources = [ os.path.join('psycopg', x) for x in sources]
 depends = [ os.path.join('psycopg', x) for x in depends]
 
-ext.append(Extension("psycopg2._psycopg", sources,
-                     define_macros=define_macros,
-                     include_dirs=include_dirs,
-                     depends=depends,
-                     undef_macros=[]))
+psycopg2_extension = Extension("psycopg2._psycopg",
+                               sources,
+                               define_macros=define_macros,
+                               include_dirs=include_dirs,
+                               depends=depends,)
 
 # Compute the direct download url.
 # Note that the current package installation programs are stupidly intelligent
@@ -551,10 +546,9 @@ setup(name="psycopg2",
       description=__doc__.split("\n")[0],
       long_description="\n".join(__doc__.split("\n")[2:]),
       classifiers=[x for x in classifiers.split("\n") if x],
-      data_files=data_files,
       package_dir={'psycopg2': 'lib', 'psycopg2.tests': 'tests'},
       packages=['psycopg2', 'psycopg2.tests'],
       cmdclass={
           'build_ext': psycopg_build_ext,
           'build_py': build_py, },
-      ext_modules=ext)
+      ext_modules=[psycopg2_extension,])
