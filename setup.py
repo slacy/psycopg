@@ -48,11 +48,15 @@ import os
 import sys
 import re
 import subprocess
-from distutils.core import setup, Extension
+from distutils.core import setup, Extension, Command
 from distutils.command.build_ext import build_ext
+from distutils.dist import Distribution
 from distutils.sysconfig import get_python_inc
 from distutils.ccompiler import get_default_compiler
 from distutils.util import get_platform
+from unittest import TextTestRunner
+
+
 
 try:
     from distutils.command.build_py import build_py_2to3 as build_py
@@ -354,7 +358,7 @@ class psycopg_build_ext(build_ext):
     def finalize_linux2(self):
         """Finalize build system configuration on GNU/Linux platform."""
         # tell piro that GCC is fine and dandy, but not so MS compilers
-        for extension in self.extensions:
+        for extension in ext:
             extension.extra_compile_args.append(
                 '-Wdeclaration-after-statement')
 
@@ -516,6 +520,39 @@ if parser.has_option('build_ext', 'static_libpq'):
 else:
     static_libpq = 0
 
+
+class PsycopgTest(Command):
+    """Allows usage of 'python setup.py test' and will test the version of
+    psycopg2 that is staged in the build directory, before it has been
+    installed."""
+    user_options = []
+
+    def __init__(self, *args, **kwargs):
+        Command.__init__(self, *args, **kwargs)
+        # Instantiate a builder, so that we can pull out the build_lib
+        # directory below.
+        self.builder = psycopg_build_ext(Distribution())
+        self.builder.finalize_options()  # sets builder.build_lib
+
+    def initialize_options(self):
+        self._dir = os.getcwd()
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        """Run the tests."""
+
+        # We modify sys.path so that the version in the build directory is
+        # preferred if it exists.
+        sys.path.insert(0, os.path.join(self._dir, self.builder.build_lib))
+
+        from tests import test_suite
+        suite = test_suite()
+        t = TextTestRunner(verbosity=1)
+        t.run(suite)
+
+
 # build the extension
 
 sources = [ os.path.join('psycopg', x) for x in sources]
@@ -552,6 +589,7 @@ setup(name="psycopg2",
       package_dir={'psycopg2': 'lib', 'psycopg2.tests': 'tests'},
       packages=['psycopg2', 'psycopg2.tests'],
       cmdclass={
-          'build_ext': psycopg_build_ext,
-          'build_py': build_py, },
+        'build_ext': psycopg_build_ext,
+        'build_py': build_py,
+        'test': PsycopgTest},
       ext_modules=ext)
