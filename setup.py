@@ -143,7 +143,7 @@ or with the pg_config option in 'setup.cfg'.
         # in the config file or via the commandline.
 
         # First, check for pg_config.exe on the PATH, and use that if found.
-        pg_config_exe = find_on_path('pg_config.exe')
+        pg_config_exe = self.find_on_path('pg_config.exe')
         if pg_config_exe:
             return pg_config_exe
 
@@ -355,7 +355,7 @@ class psycopg_build_ext(build_ext):
         """Complete the build system configuation."""
         build_ext.finalize_options(self)
 
-        pg_config_helper = PostgresConfig(self.pg_config)
+        pg_config_helper = PostgresConfig(self)
 
         self.include_dirs.append(".")
         if self.static_libpq:
