@@ -49,15 +49,11 @@ import sys
 import re
 import subprocess
 from distutils.core import setup, Extension
-from distutils.errors import DistutilsFileError
 from distutils.command.build_ext import build_ext
 from distutils.sysconfig import get_python_inc
 from distutils.ccompiler import get_default_compiler
 from distutils.util import get_platform
-try:
-    from distutils.msvc9compiler import MSVCCompiler
-except ImportError:
-    MSVCCompiler = None
+
 try:
     from distutils.command.build_py import build_py_2to3 as build_py
 except ImportError:
@@ -120,6 +116,15 @@ or with the pg_config option in 'setup.cfg'.
             result = result.decode('ascii')
         return result
 
+    def find_on_path(self, exename, path_directories=None):
+        if not path_directories:
+            path_directories = os.environ['PATH'].split(os.pathsep)
+        for dir_name in path_directories:
+            fullpath = os.path.join(dir_name, exename)
+            if os.path.isfile(fullpath):
+                return fullpath
+        return None
+
     def autodetect_pg_config_path(self):
         """Find and return the path to the pg_config executable."""
         if PLATFORM_IS_WINDOWS:
@@ -129,12 +134,7 @@ or with the pg_config option in 'setup.cfg'.
 
     def autodetect_pg_config_path_posix(self):
         """Return pg_config from the current PATH"""
-        exename = 'pg_config'
-        for dir in os.environ['PATH'].split(os.pathsep):
-            fn = os.path.join(dir, exename)
-            if os.path.isfile(fn):
-                return fn
-        return None
+        return self.find_on_path('pg_config')
 
     def autodetect_pg_config_path_windows(self):
         """Attempt several different ways of finding the pg_config
@@ -243,6 +243,9 @@ class psycopg_build_ext(build_ext):
     def __init__(self, *args, **kwargs):
         build_ext.__init__(self, *args, **kwargs)
         self.pg_config = PostgresConfig()
+        compiler_name = self.get_compiler_name().lower()
+        self.compiler_is_msvc = compiler_name.startswith('msvc')
+        self.compiler_is_mingw = compiler_name.startswith('mingw')
 
     def initialize_options(self):
         build_ext.initialize_options(self)
@@ -253,7 +256,7 @@ class psycopg_build_ext(build_ext):
         self.have_ssl = have_ssl
         self.static_libpq = static_libpq
 
-    def get_compiler(self):
+    def get_compiler_name(self):
         """Return the name of the C compiler used to compile extensions.
 
         If a compiler was not explicitly set (on the command line, for
@@ -270,40 +273,39 @@ class psycopg_build_ext(build_ext):
             name = get_default_compiler()
         return name
 
-    def get_export_symbols(self, ext):
+    def get_export_symbols(self, extension):
         # Fix MSVC seeing two of the same export symbols.
-        if self.get_compiler().lower().startswith('msvc'):
+        if self.compiler_is_msvc:
             return []
         else:
-            return build_ext.get_export_symbols(self, ext)
+            return build_ext.get_export_symbols(self, extension)
 
-    def build_extension(self, ext):
-        build_ext.build_extension(self, ext)
+    def build_extension(self, extension):
+        build_ext.build_extension(self, extension)
 
         # For Python versions that use MSVC compiler 2008, re-insert the
         #  manifest into the resulting .pyd file.
-        if MSVCCompiler and isinstance(self.compiler, MSVCCompiler):
+        if self.compiler_is_msvc:
             platform = get_platform()
             # Default to the x86 manifest
             manifest = '_psycopg.vc9.x86.manifest'
             if platform == 'win-amd64':
                 manifest = '_psycopg.vc9.amd64.manifest'
-            self.compiler.spawn(['mt.exe', '-nologo', '-manifest',
-                os.path.join('psycopg', manifest),
-                '-outputresource:%s;2' % (os.path.join(self.build_lib, 'psycopg2', '_psycopg.pyd'))])
+            self.compiler.spawn(
+                ['mt.exe', '-nologo', '-manifest',
+                 os.path.join('psycopg', manifest),
+                 '-outputresource:%s;2' % (
+                        os.path.join(self.build_lib,
+                                     'psycopg2', '_psycopg.pyd'))])
 
     def finalize_win32(self):
         """Finalize build system configuration on win32 platform."""
-        import struct
         sysVer = sys.version_info[:2]
 
         # Add compiler-specific arguments:
         extra_compiler_args = []
 
-        compiler_name = self.get_compiler().lower()
-        compiler_is_msvc = compiler_name.startswith('msvc')
-        compiler_is_mingw = compiler_name.startswith('mingw')
-        if compiler_is_mingw:
+        if self.compiler_is_mingw:
             # Default MinGW compilation of Python extensions on Windows uses
             # only -O:
             extra_compiler_args.append('-O3')
@@ -315,23 +317,23 @@ class psycopg_build_ext(build_ext):
             extra_compiler_args.append('-fno-strict-aliasing')
 
             # Force correct C runtime library linkage:
-            if sysVer <= (2,3):
+            if sysVer <= (2, 3):
                 # Yes:  'msvcr60', rather than 'msvcrt', is the correct value
                 # on the line below:
                 self.libraries.append('msvcr60')
-            elif sysVer in ((2,4), (2,5)):
+            elif sysVer in ((2, 4), (2, 5)):
                 self.libraries.append('msvcr71')
             # Beyond Python 2.5, we take our chances on the default C runtime
             # library, because we don't know what compiler those future
             # versions of Python will use.
 
-        for exten in ext: # ext is a global list of Extension objects
-            exten.extra_compile_args.extend(extra_compiler_args)
+        for extension in ext:  # ext is a global list of Extension objects
+            extension.extra_compile_args.extend(extra_compiler_args)
         # End of add-compiler-specific arguments section.
 
         self.libraries.append("ws2_32")
         self.libraries.append("advapi32")
-        if compiler_is_msvc:
+        if self.compiler_is_msvc:
             # MSVC requires an explicit "libpq"
             self.libraries.remove("pq")
             self.libraries.append("secur32")
@@ -356,8 +358,9 @@ class psycopg_build_ext(build_ext):
     def finalize_linux2(self):
         """Finalize build system configuration on GNU/Linux platform."""
         # tell piro that GCC is fine and dandy, but not so MS compilers
-        for ext in self.extensions:
-            ext.extra_compile_args.append('-Wdeclaration-after-statement')
+        for extension in self.extensions:
+            extension.extra_compile_args.append(
+                '-Wdeclaration-after-statement')
 
     def finalize_options(self):
         """Complete the build system configuation."""
@@ -365,7 +368,8 @@ class psycopg_build_ext(build_ext):
 
         self.include_dirs.append(".")
         if self.static_libpq:
-            if not self.link_objects: self.link_objects = []
+            if not self.link_objects:
+                self.link_objects = []
             self.link_objects.append(
                     os.path.join(self.pg_config.query("libdir"), "libpq.a"))
         else:
@@ -383,7 +387,8 @@ class psycopg_build_ext(build_ext):
             except:
                 pgversion = "7.4.0"
 
-            verre = re.compile(r"(\d+)\.(\d+)(?:(?:\.(\d+))|(devel|(alpha|beta|rc)\d+))")
+            verre = re.compile(
+                r"(\d+)\.(\d+)(?:(?:\.(\d+))|(devel|(alpha|beta|rc)\d+))")
             m = verre.match(pgversion)
             if m:
                 pgmajor, pgminor, pgpatch = m.group(1, 2, 3)
@@ -398,7 +403,7 @@ class psycopg_build_ext(build_ext):
             define_macros.append(("PG_VERSION_HEX", "0x%02X%02X%02X" %
                                   (int(pgmajor), int(pgminor), int(pgpatch))))
         except Warning:
-            w = sys.exc_info()[1] # work around py 2/3 different syntax
+            w = sys.exc_info()[1]  # work around py 2/3 different syntax
             sys.stderr.write("Error: %s\n" % w)
             sys.exit(1)
 
@@ -411,7 +416,8 @@ define_macros = []
 include_dirs = []
 
 # gather information to build the extension module
-ext = [] ; data_files = []
+ext = []
+data_files = []
 
 # sources
 
@@ -464,7 +470,7 @@ else:
 if os.path.exists(mxincludedir):
     # Build the support for mx: we will check at runtime if it can be imported
     include_dirs.append(mxincludedir)
-    define_macros.append(('HAVE_MXDATETIME','1'))
+    define_macros.append(('HAVE_MXDATETIME', '1'))
     sources.append('adapter_mxdatetime.c')
     depends.extend(['adapter_mxdatetime.h', 'typecast_mxdatetime.c'])
     have_mxdatetime = True
@@ -472,18 +478,21 @@ if os.path.exists(mxincludedir):
 
 # now decide which package will be the default for date/time typecasts
 if have_pydatetime and (use_pydatetime or not have_mxdatetime):
-    define_macros.append(('PSYCOPG_DEFAULT_PYDATETIME','1'))
+    define_macros.append(('PSYCOPG_DEFAULT_PYDATETIME', '1'))
 elif have_mxdatetime:
-    define_macros.append(('PSYCOPG_DEFAULT_MXDATETIME','1'))
+    define_macros.append(('PSYCOPG_DEFAULT_MXDATETIME', '1'))
 else:
-    def e(msg):
-        sys.stderr.write("error: " + msg + "\n")
-    e("psycopg requires a datetime module:")
-    e("    mx.DateTime module not found")
-    e("    python datetime module not found")
-    e("Note that psycopg needs the module headers and not just the module")
-    e("itself. If you installed Python or mx.DateTime from a binary package")
-    e("you probably need to install its companion -dev or -devel package.")
+    error_message = """\
+psycopg requires a datetime module:
+    mx.DateTime module not found
+    python datetime module not found
+
+Note that psycopg needs the module headers and not just the module
+itself. If you installed Python or mx.DateTime from a binary package
+you probably need to install its companion -dev or -devel package."""
+
+    for line in error_message.split("\n"):
+        sys.stderr.write("error: " + line)
     sys.exit(1)
 
 # generate a nice version string to avoid confusion when users report bugs
@@ -497,9 +506,9 @@ else:
     PSYCOPG_VERSION_EX = PSYCOPG_VERSION
 
 if not PLATFORM_IS_WINDOWS:
-    define_macros.append(('PSYCOPG_VERSION', '"'+PSYCOPG_VERSION_EX+'"'))
+    define_macros.append(('PSYCOPG_VERSION', '"' + PSYCOPG_VERSION_EX + '"'))
 else:
-    define_macros.append(('PSYCOPG_VERSION', '\\"'+PSYCOPG_VERSION_EX+'\\"'))
+    define_macros.append(('PSYCOPG_VERSION', '\\"' + PSYCOPG_VERSION_EX + '\\"'))
 
 if parser.has_option('build_ext', 'have_ssl'):
     have_ssl = int(parser.get('build_ext', 'have_ssl'))
@@ -537,17 +546,16 @@ setup(name="psycopg2",
       author="Federico Di Gregorio",
       author_email="fog@initd.org",
       url="http://initd.org/psycopg/",
-      download_url = download_url,
+      download_url=download_url,
       license="GPL with exceptions or ZPL",
-      platforms = ["any"],
+      platforms=["any"],
       description=__doc__.split("\n")[0],
       long_description="\n".join(__doc__.split("\n")[2:]),
       classifiers=[x for x in classifiers.split("\n") if x],
       data_files=data_files,
-      package_dir={'psycopg2':'lib', 'psycopg2.tests': 'tests'},
+      package_dir={'psycopg2': 'lib', 'psycopg2.tests': 'tests'},
       packages=['psycopg2', 'psycopg2.tests'],
       cmdclass={
           'build_ext': psycopg_build_ext,
           'build_py': build_py, },
       ext_modules=ext)
-
